@@ -1,0 +1,26 @@
+{
+  "name": "ticket-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Музыкальная экосистема: сайт лейбла + сервис дистрибуции",
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "clean": "turbo run clean && rm -rf node_modules",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0",
+    "typescript": "^5.4.0",
+    "@types/node": "^20.11.0",
+    "eslint": "^8.57.0",
+    "prettier": "^3.2.0"
+  },
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
