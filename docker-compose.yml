@@ -1,0 +1,228 @@
+version: '3.8'
+
+services:
+  # PostgreSQL для сайта и дистрибуции
+  postgres:
+    image: postgres:15-alpine
+    container_name: ticket-postgres
+    environment:
+      POSTGRES_USER: ticket
+      POSTGRES_PASSWORD: ticket_password
+      POSTGRES_DB: ticket_main
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - ticket-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ticket"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis для кэша и очередей
+  redis:
+    image: redis:7-alpine
+    container_name: ticket-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - ticket-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO (S3-compatible storage) для аудиофайлов
+  minio:
+    image: minio/minio:latest
+    container_name: ticket-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin_password
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"  # API
+      - "9001:9001"  # Console
+    volumes:
+      - minio_data:/data
+    networks:
+      - ticket-network
+
+  # RabbitMQ для очередей задач
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: ticket-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ticket
+      RABBITMQ_DEFAULT_PASS: ticket_password
+    ports:
+      - "5672:5672"  # AMQP
+      - "15672:15672"  # Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - ticket-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Strapi CMS для сайта лейбла
+  strapi:
+    build:
+      context: ./САЙТ/cms
+      dockerfile: Dockerfile
+    container_name: ticket-strapi
+    environment:
+      DATABASE_CLIENT: postgres
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ticket_cms
+      DATABASE_USERNAME: ticket
+      DATABASE_PASSWORD: ticket_password
+      JWT_SECRET: strapi_jwt_secret_key
+      ADMIN_JWT_SECRET: strapi_admin_jwt_secret
+    ports:
+      - "1337:1337"
+    volumes:
+      - strapi_data:/srv/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - ticket-network
+
+  # Frontend сайта лейбла
+  site-frontend:
+    build:
+      context: ./САЙТ/frontend
+      dockerfile: Dockerfile
+    container_name: ticket-site-frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+      NEXT_PUBLIC_CMS_URL: http://localhost:1337
+    ports:
+      - "3000:3000"
+    depends_on:
+      - strapi
+    networks:
+      - ticket-network
+
+  # Backend сайта лейбла
+  site-backend:
+    build:
+      context: ./САЙТ/backend
+      dockerfile: Dockerfile
+    container_name: ticket-site-backend
+    environment:
+      PORT: 3001
+      DATABASE_URL: postgresql://ticket:ticket_password@postgres:5432/ticket_main
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ticket-network
+
+  # API дистрибуции
+  distributor-api:
+    build:
+      context: ./Музыка/distributor-api
+      dockerfile: Dockerfile
+    container_name: ticket-distributor-api
+    environment:
+      PORT: 3002
+      DATABASE_URL: postgresql://ticket:ticket_password@postgres:5432/ticket_distributor
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://ticket:ticket_password@rabbitmq:5672
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin_password
+      S3_BUCKET: music-releases
+    ports:
+      - "3002:3002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    networks:
+      - ticket-network
+
+  # Веб-интерфейс дистрибуции
+  distributor-web:
+    build:
+      context: ./Музыка/distributor-web
+      dockerfile: Dockerfile
+    container_name: ticket-distributor-web
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3002
+    ports:
+      - "3003:3000"
+    depends_on:
+      - distributor-api
+    networks:
+      - ticket-network
+
+  # Админка лейбла
+  admin-panel:
+    build:
+      context: ./Музыка/admin-panel
+      dockerfile: Dockerfile
+    container_name: ticket-admin-panel
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3002
+    ports:
+      - "3004:3000"
+    depends_on:
+      - distributor-api
+    networks:
+      - ticket-network
+
+  # Микросервис обработки аудио
+  audio-processor:
+    build:
+      context: ./Музыка/audio-processor
+      dockerfile: Dockerfile
+    container_name: ticket-audio-processor
+    environment:
+      RABBITMQ_URL: amqp://ticket:ticket_password@rabbitmq:5672
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin_password
+      S3_BUCKET: music-releases
+    volumes:
+      - audio_temp:/tmp/audio
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    networks:
+      - ticket-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  rabbitmq_data:
+  strapi_data:
+  audio_temp:
+
+networks:
+  ticket-network:
+    driver: bridge
